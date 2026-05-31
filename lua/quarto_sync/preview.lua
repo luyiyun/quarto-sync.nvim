@@ -22,6 +22,8 @@ local state = {
   last_file = nil,
   last_anchor = nil,
   last_sent_at = 0,
+  last_browser_line = nil,
+  suppress_cursor_until = 0,
   generation = 0,
 }
 
@@ -148,6 +150,57 @@ local function should_sync_file(file)
   return state.project_root ~= nil and util.path_starts_with(file, state.project_root)
 end
 
+local function line_from_payload(payload)
+  local line = tonumber(payload and payload.line)
+  if not line or line ~= line then
+    return nil
+  end
+  return math.max(1, math.floor(line))
+end
+
+local function window_shows_file(win, file)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+
+  local bufnr = vim.api.nvim_win_get_buf(win)
+  local name = util.normalize(vim.api.nvim_buf_get_name(bufnr))
+  return name == file
+end
+
+local function source_window()
+  if not state.current_file then
+    return nil
+  end
+
+  local current_win = vim.api.nvim_get_current_win()
+  if window_shows_file(current_win, state.current_file) then
+    return current_win
+  end
+
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if window_shows_file(win, state.current_file) then
+      return win
+    end
+  end
+
+  return nil
+end
+
+local function center_source_window(win, line)
+  local bufnr = vim.api.nvim_win_get_buf(win)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  line = math.min(math.max(1, line), math.max(1, line_count))
+
+  state.suppress_cursor_until = uv.now() + math.max(config.get().debounce_ms, 250)
+  vim.api.nvim_win_set_cursor(win, { line, 0 })
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("normal! zz")
+  end)
+  state.last_browser_line = line
+  return true
+end
+
 function M.preview()
   local opts = config.get()
   local file = util.current_file()
@@ -177,6 +230,9 @@ function M.preview()
     source_markers.cleanup_shadow(shadow_session)
     return false
   end
+  server.set_scroll_handler(function(payload)
+    require("quarto_sync.preview").sync_from_browser(payload)
+  end)
 
   state.running = true
   state.stopping = false
@@ -189,6 +245,8 @@ function M.preview()
   state.last_file = nil
   state.last_anchor = nil
   state.last_sent_at = 0
+  state.last_browser_line = nil
+  state.suppress_cursor_until = 0
 
   setup_shadow_refresh()
 
@@ -214,6 +272,7 @@ function M.preview()
         return
       end
       state.running = false
+      server.set_scroll_handler(nil)
       server.stop()
       cleanup_shadow()
       util.notify("Quarto preview exited with code " .. tostring(code), vim.log.levels.WARN)
@@ -222,6 +281,7 @@ function M.preview()
 
   if job <= 0 then
     state.running = false
+    server.set_scroll_handler(nil)
     server.stop()
     cleanup_shadow()
     util.notify("Could not start `quarto preview`. Check `quarto_cmd` and Quarto installation.", vim.log.levels.ERROR)
@@ -238,6 +298,7 @@ function M.stop(opts)
   state.stopping = true
   state.generation = state.generation + 1
   stop_preview_job()
+  server.set_scroll_handler(nil)
   server.stop()
   cleanup_shadow()
 
@@ -249,6 +310,8 @@ function M.stop(opts)
   state.last_file = nil
   state.last_anchor = nil
   state.last_sent_at = 0
+  state.last_browser_line = nil
+  state.suppress_cursor_until = 0
 
   if not opts.quiet then
     util.notify("Stopped quarto-sync preview.", vim.log.levels.INFO)
@@ -272,12 +335,16 @@ function M.sync_cursor(opts)
     return false
   end
 
+  local now = uv.now()
+  if not opts.force and now < state.suppress_cursor_until then
+    return false
+  end
+
   local file = util.current_file()
   if not should_sync_file(file) then
     return false
   end
 
-  local now = uv.now()
   if not opts.force and now - state.last_sent_at < cfg.debounce_ms then
     return false
   end
@@ -302,6 +369,27 @@ function M.sync_cursor(opts)
   end
 
   return false
+end
+
+function M.sync_from_browser(payload)
+  local cfg = config.get()
+  if not cfg.sync_from_browser or not state.running then
+    return false
+  end
+  if type(payload) ~= "table" then
+    return false
+  end
+  if payload.type and payload.type ~= "scroll" then
+    return false
+  end
+
+  local line = line_from_payload(payload)
+  local win = source_window()
+  if not line or not win then
+    return false
+  end
+
+  return center_source_window(win, line)
 end
 
 function M.setup_autocmds()
@@ -333,6 +421,7 @@ function M.status()
     "preview url: " .. tostring(state.preview_url or "none"),
     "last sync: " .. tostring(state.last_file or "none") .. ":" .. tostring(state.last_line or "none"),
     "last anchor: " .. tostring(state.last_anchor or "none"),
+    "last browser sync line: " .. tostring(state.last_browser_line or "none"),
     "clients: " .. tostring(server_status.clients or 0),
   }
 

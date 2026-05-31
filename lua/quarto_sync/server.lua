@@ -13,6 +13,8 @@ local state = {
   connections = {},
   clients = {},
   last_payload = nil,
+  last_scroll_payload = nil,
+  scroll_handler = nil,
 }
 
 local status_text = {
@@ -124,6 +126,31 @@ function M.broadcast(payload)
   end
 end
 
+function M.set_scroll_handler(handler)
+  if handler ~= nil and type(handler) ~= "function" then
+    return false
+  end
+  state.scroll_handler = handler
+  return true
+end
+
+local function handle_browser_scroll(payload)
+  state.last_scroll_payload = payload
+  if not state.scroll_handler then
+    return false
+  end
+
+  vim.schedule(function()
+    if state.scroll_handler then
+      local ok, err = pcall(state.scroll_handler, payload)
+      if not ok then
+        util.notify("Browser scroll sync failed: " .. tostring(err), vim.log.levels.WARN)
+      end
+    end
+  end)
+  return true
+end
+
 local function handle_events(client)
   local headers = {
     ["Content-Type"] = "text/event-stream",
@@ -202,6 +229,22 @@ local function handle_request(client, request)
 
     M.broadcast(payload)
     write_json(client, 200, { ok = true })
+    return
+  end
+
+  if request.path == "/scroll" then
+    if request.method ~= "POST" then
+      write_json(client, 405, { error = "POST required" })
+      return
+    end
+
+    local ok, payload = pcall(util.json_decode, request.body)
+    if not ok or type(payload) ~= "table" then
+      write_json(client, 400, { error = "invalid JSON payload" })
+      return
+    end
+
+    write_json(client, 200, { ok = true, handled = handle_browser_scroll(payload) })
     return
   end
 
@@ -329,6 +372,7 @@ function M.status()
     port = state.port,
     clients = vim.tbl_count(state.clients),
     last_payload = state.last_payload,
+    last_scroll_payload = state.last_scroll_payload,
   }
 end
 

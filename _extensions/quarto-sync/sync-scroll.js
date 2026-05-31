@@ -9,12 +9,18 @@
   const DEFAULT_PORT = 18787;
   const HIGHLIGHT_MS = 900;
   const MANUAL_SCROLL_GRACE_MS = 450;
+  const PROGRAMMATIC_SCROLL_QUIET_MS = 250;
+  const BROWSER_SCROLL_DEBOUNCE_MS = 120;
 
   const state = {
     current: null,
     highlightTimer: null,
     lastManualScrollAt: 0,
-    suppressScrollEvent: false,
+    programmaticScrollActive: false,
+    programmaticScrollQuietTimer: null,
+    scrollTimer: null,
+    port: null,
+    lastSentLine: null,
   };
 
   function queryPort() {
@@ -27,6 +33,42 @@
   function numberAttr(element, name) {
     const value = Number(element.getAttribute(name));
     return Number.isFinite(value) ? value : null;
+  }
+
+  function serverBaseUrl() {
+    const port = state.port || queryPort();
+    return `http://127.0.0.1:${port}`;
+  }
+
+  function clearBrowserScrollTimer() {
+    if (state.scrollTimer) {
+      window.clearTimeout(state.scrollTimer);
+      state.scrollTimer = null;
+    }
+  }
+
+  function finishProgrammaticScroll() {
+    state.programmaticScrollActive = false;
+    if (state.programmaticScrollQuietTimer) {
+      window.clearTimeout(state.programmaticScrollQuietTimer);
+      state.programmaticScrollQuietTimer = null;
+    }
+  }
+
+  function refreshProgrammaticScrollQuietTimer() {
+    if (state.programmaticScrollQuietTimer) {
+      window.clearTimeout(state.programmaticScrollQuietTimer);
+    }
+    state.programmaticScrollQuietTimer = window.setTimeout(
+      finishProgrammaticScroll,
+      PROGRAMMATIC_SCROLL_QUIET_MS
+    );
+  }
+
+  function beginProgrammaticScroll() {
+    state.programmaticScrollActive = true;
+    clearBrowserScrollTimer();
+    refreshProgrammaticScrollQuietTimer();
   }
 
   function findByAttribute(name, value) {
@@ -190,12 +232,66 @@
       return;
     }
 
-    state.suppressScrollEvent = true;
+    beginProgrammaticScroll();
     element.scrollIntoView({ block: "center", behavior: "smooth" });
     highlight(element);
-    window.setTimeout(() => {
-      state.suppressScrollEvent = false;
-    }, 250);
+  }
+
+  function sourceLineForViewport() {
+    const markers = Array.from(document.querySelectorAll(".qsync-source-marker[data-qsync-source-line]"));
+    if (markers.length === 0) {
+      return null;
+    }
+
+    const targetTop = Math.max(0, window.innerHeight * 0.35);
+    let best = null;
+    let bestTop = -Infinity;
+    let firstBelow = null;
+    let firstBelowTop = Infinity;
+
+    markers.forEach((marker) => {
+      const line = numberAttr(marker, "data-qsync-source-line");
+      if (line === null) {
+        return;
+      }
+
+      const top = marker.getBoundingClientRect().top;
+      if (top <= targetTop && top >= bestTop) {
+        best = { line, top };
+        bestTop = top;
+      } else if (top > targetTop && top < firstBelowTop) {
+        firstBelow = { line, top };
+        firstBelowTop = top;
+      }
+    });
+
+    const selected = best || firstBelow;
+    return selected ? selected.line : null;
+  }
+
+  function sendBrowserScroll() {
+    state.scrollTimer = null;
+    const line = sourceLineForViewport();
+    if (line === null || line === state.lastSentLine) {
+      return;
+    }
+
+    state.lastSentLine = line;
+    fetch(`${serverBaseUrl()}/scroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "scroll", line }),
+      keepalive: true,
+    }).catch(() => {
+      // The Neovim sync server may not be running for ordinary rendered HTML.
+    });
+  }
+
+  function scheduleBrowserScrollSync() {
+    if (state.scrollTimer) {
+      window.clearTimeout(state.scrollTimer);
+    }
+    state.scrollTimer = window.setTimeout(sendBrowserScroll, BROWSER_SCROLL_DEBOUNCE_MS);
   }
 
   function handlePayload(payload) {
@@ -214,6 +310,7 @@
 
   function connect() {
     const port = queryPort();
+    state.port = port;
     const source = new EventSource(`http://127.0.0.1:${port}/events`);
 
     const onEvent = (event) => {
@@ -231,8 +328,22 @@
   window.addEventListener(
     "scroll",
     () => {
-      if (!state.suppressScrollEvent) {
-        state.lastManualScrollAt = Date.now();
+      if (state.programmaticScrollActive) {
+        refreshProgrammaticScrollQuietTimer();
+        return;
+      }
+
+      state.lastManualScrollAt = Date.now();
+      scheduleBrowserScrollSync();
+    },
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "scrollend",
+    () => {
+      if (state.programmaticScrollActive) {
+        finishProgrammaticScroll();
       }
     },
     { passive: true }

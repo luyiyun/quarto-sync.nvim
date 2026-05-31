@@ -7,6 +7,7 @@ M.defaults = {
   browser_cmd = nil,
   open_browser = true,
   sync_on_cursor_move = true,
+  sync_from_browser = true,
   debounce_ms = 120,
   install_extension_if_missing = false,
 }
