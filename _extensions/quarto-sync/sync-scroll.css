@@ -1,3 +1,13 @@
+.qsync-source-marker {
+  display: block;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  visibility: hidden;
+  scroll-margin-top: 96px;
+}
+
 .qsync-current {
   outline: 2px solid rgba(80, 120, 255, 0.35);
   border-radius: 4px;

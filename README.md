@@ -1,14 +1,17 @@
 # quarto-sync.nvim
 
+[中文文档](README.zh-CN.md)
+
 `quarto-sync.nvim` is a minimal Neovim plugin plus Quarto extension for one-way synchronized scrolling from a `.qmd` buffer to the rendered Quarto HTML preview.
 
-The plugin starts `quarto preview`, starts an internal local sync service, watches cursor movement in Neovim, and sends the current source position to the browser. The Quarto extension injects a tiny browser script and best-effort block markers into the rendered HTML.
+The plugin starts `quarto preview`, starts an internal local sync service, watches cursor movement in Neovim, and sends the current source position to the browser. `:QSyncPreview` renders a temporary shadow copy of the `.qmd` file with invisible source-line markers, while the Quarto extension injects a tiny browser script and fallback block markers into the rendered HTML.
 
 ## Features
 
 - `:QSyncPreview` starts Quarto preview for the current `.qmd` file.
 - Internal HTTP + Server-Sent Events service; no separate bridge process.
-- Cursor movement in Neovim scrolls the browser preview to a nearby block.
+- Cursor movement in Neovim scrolls the browser preview using source-line markers.
+- Labeled Quarto blocks, figures, tables, and diagrams use anchor-based sync before source-line fallback.
 - Lightweight highlight for the current preview block.
 - `:QSyncInstallExtension` copies the bundled Quarto extension into the current project.
 - Commands use the `QSync` prefix so they can coexist with `quarto.nvim`.
@@ -30,7 +33,7 @@ Install this repository as a normal Neovim plugin. `:QSyncPreview` automatically
 -- ~/.config/nvim/lua/plugins/quarto-sync.lua
 return {
   {
-    "your-github-name/quarto-sync.nvim",
+    "luyiyun/quarto-sync.nvim",
     ft = { "quarto", "markdown" },
     main = "quarto_sync",
     opts = {
@@ -79,18 +82,18 @@ require("quarto_sync").setup({
 
 ## Commands
 
-- `:QSyncPreview` starts the sync service and `quarto preview` for the current `.qmd` file. It passes the bundled sync filter to Quarto automatically.
-- `:QSyncStop` stops the Quarto preview process and internal sync service.
+- `:QSyncPreview` starts the sync service and `quarto preview` for a hidden shadow copy of the current `.qmd` file. It passes the bundled sync filter to Quarto automatically.
+- `:QSyncStop` stops the Quarto preview process and internal sync service, then removes the shadow file.
 - `:QSyncRestart` restarts both preview and sync service.
 - `:QSyncInstallExtension` copies `_extensions/quarto-sync/` into the current Quarto project.
 - `:QSyncInstallExtension!` overwrites an existing installed copy.
-- `:QSyncStatus` prints preview, server, port, file, URL, and last synced line.
+- `:QSyncStatus` prints preview, server, port, source file, shadow file, URL, last synced line, and last detected anchor.
 
 Commands are only created if no command with the same name already exists.
 
 ## Quarto Extension
 
-`:QSyncPreview` uses the bundled filter directly and does not require project installation.
+`:QSyncPreview` uses the bundled filter directly and does not require project installation. It also creates a hidden `.qsync-*.qmd` file next to the original source during preview so Quarto can preserve real source-line anchors in HTML.
 
 Install the extension only if you also want normal `quarto render` or `quarto preview` outside Neovim to include sync assets. From a `.qmd` buffer in your Quarto project, run:
 
@@ -127,9 +130,10 @@ quarto-sync:
 
 1. Open a `.qmd` file in Neovim.
 2. Run `:QSyncPreview`.
-3. Move the cursor in Neovim and the browser preview will scroll to a nearby rendered block.
+3. Move the cursor in Neovim and the browser preview will scroll to the matching rendered source-line region.
+4. Save the `.qmd` file when you change content; the shadow copy is regenerated on `BufWritePost`.
 
-In Chrome DevTools, the rendered page should contain `sync-scroll.js` and `data-qsync-block-index` when sync preview is active.
+In Chrome DevTools, the rendered page should contain `sync-scroll.js`, `.qsync-source-marker`, and `data-qsync-source-line` when sync preview is active. Labeled figures and diagrams should also have an HTML anchor such as `id="fig-example"` or `data-label="fig-example"`.
 
 ## Configuration
 
@@ -151,24 +155,28 @@ This plugin does not define `:QuartoPreview`, `:QuartoClosePreview`, `:QuartoHel
 ## Known Limitations
 
 - MVP supports Neovim to browser sync only.
-- Source mapping is best-effort block-level mapping. Pandoc/Quarto Lua filters do not reliably expose original `.qmd` line numbers for every block, so this version injects `data-qsync-block-index` markers and estimates the source block from the cursor line.
+- Source mapping uses temporary source-line markers for preview, then falls back to `data-qsync-source-index` / `data-qsync-block-index` when markers are absent.
+- Markdown tables are treated as one sync region; table-cell-level sync is intentionally not attempted.
 - Single-file `.qmd` preview is the main supported path.
 - Quarto books, websites, revealjs slides, PDF output, and remote SSH browser forwarding are not handled.
-- Code output, figures, tables, callouts, and shortcodes may scroll to a nearby block rather than an exact source line.
+- Code output, figures, tables, callouts, and shortcodes may scroll to the nearest marker or labeled anchor rather than an exact inline position.
+- Add labels such as `#| label: fig-example` or `%%| label: fig-example` to diagrams and executable blocks for the best sync accuracy.
 - The plugin never edits `_quarto.yml` or `.qmd` YAML automatically.
 - `:QSyncPreview` passes `--lua-filter` to Quarto. If a future Quarto version changes render argument forwarding for preview, this integration may need adjustment.
 
 ## Troubleshooting
 
-- If Chrome DevTools cannot find `sync-scroll` or `data-qsync`, the page was rendered without the filter. Run `:QSyncRestart` and make sure the page URL includes `qsyncPort=<port>`.
+- If Chrome DevTools cannot find `sync-scroll`, `.qsync-source-marker`, or `data-qsync`, the page was rendered without the filter or without the shadow source. Run `:QSyncRestart` and make sure the page URL includes `qsyncPort=<port>`.
 - If the browser does not move, check `:QSyncStatus` and confirm the server is running.
+- If diagrams or figures still land nearby instead of exactly, check `:QSyncStatus`; `last anchor` should show the label under the cursor, for example `fig-bn-three-variables`.
+- If Neovim or Quarto exits unexpectedly, a hidden `.qsync-*.qmd` file may be left next to the source file. It is safe to delete after preview is stopped.
 - If port `18787` is busy, set another `port` in Neovim setup. `:QSyncPreview` will append that port to the browser URL.
 - If the preview URL is not detected, run `quarto preview <file> --no-browser` manually and check that Quarto prints a local `http://...` URL.
 - If no browser opens, set `browser_cmd`, for example `"firefox"` or `{ "open", "-a", "Safari" }` on macOS.
 
 ## Roadmap
 
-- More accurate source line mapping when Quarto/Pandoc exposes reliable source positions.
+- Optional cleanup of stale shadow files after unexpected crashes.
 - WebSocket transport for richer two-way interactions.
 - Browser to Neovim reverse jump.
 - Better support for Quarto books and websites.

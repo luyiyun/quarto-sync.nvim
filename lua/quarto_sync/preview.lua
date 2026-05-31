@@ -1,6 +1,7 @@
 local config = require("quarto_sync.config")
 local extension = require("quarto_sync.extension")
 local server = require("quarto_sync.server")
+local source_markers = require("quarto_sync.source_markers")
 local transport = require("quarto_sync.transport")
 local util = require("quarto_sync.util")
 
@@ -14,14 +15,18 @@ local state = {
   preview_job = nil,
   preview_url = nil,
   current_file = nil,
+  shadow_file = nil,
+  shadow_session = nil,
   project_root = nil,
   last_line = nil,
   last_file = nil,
+  last_anchor = nil,
   last_sent_at = 0,
   generation = 0,
 }
 
 local autocmd_group = nil
+local write_autocmd = nil
 
 local function strip_ansi(text)
   return (text or ""):gsub("\27%[[0-9;?]*[ -/]*[@-~]", "")
@@ -104,6 +109,35 @@ local function stop_preview_job()
   end
 end
 
+local function clear_write_autocmd()
+  if write_autocmd then
+    pcall(vim.api.nvim_del_autocmd, write_autocmd)
+    write_autocmd = nil
+  end
+end
+
+local function cleanup_shadow()
+  clear_write_autocmd()
+  if state.shadow_session then
+    source_markers.cleanup_shadow(state.shadow_session)
+  end
+  state.shadow_session = nil
+  state.shadow_file = nil
+end
+
+local function setup_shadow_refresh()
+  clear_write_autocmd()
+  write_autocmd = vim.api.nvim_create_autocmd("BufWritePost", {
+    group = autocmd_group,
+    callback = function(args)
+      local file = util.normalize(args.file)
+      if state.shadow_session and state.current_file and file == state.current_file then
+        source_markers.refresh_shadow(state.shadow_session)
+      end
+    end,
+  })
+end
+
 local function should_sync_file(file)
   if not file or not util.is_qmd(file) then
     return false
@@ -134,7 +168,13 @@ function M.preview()
   state.generation = state.generation + 1
   local generation = state.generation
 
+  local shadow_session = source_markers.create_shadow(file, project_root)
+  if not shadow_session then
+    return false
+  end
+
   if not server.start(opts) then
+    source_markers.cleanup_shadow(shadow_session)
     return false
   end
 
@@ -142,12 +182,17 @@ function M.preview()
   state.stopping = false
   state.preview_url = nil
   state.current_file = file
+  state.shadow_session = shadow_session
+  state.shadow_file = shadow_session.path
   state.project_root = project_root
   state.last_line = nil
   state.last_file = nil
+  state.last_anchor = nil
   state.last_sent_at = 0
 
-  local cmd = { opts.quarto_cmd, "preview", file, "--no-browser", "--lua-filter", filter_path }
+  setup_shadow_refresh()
+
+  local cmd = { opts.quarto_cmd, "preview", shadow_session.path, "--no-browser", "--lua-filter", filter_path }
   local job = vim.fn.jobstart(cmd, {
     cwd = project_root,
     stdout_buffered = false,
@@ -170,6 +215,7 @@ function M.preview()
       end
       state.running = false
       server.stop()
+      cleanup_shadow()
       util.notify("Quarto preview exited with code " .. tostring(code), vim.log.levels.WARN)
     end,
   })
@@ -177,6 +223,7 @@ function M.preview()
   if job <= 0 then
     state.running = false
     server.stop()
+    cleanup_shadow()
     util.notify("Could not start `quarto preview`. Check `quarto_cmd` and Quarto installation.", vim.log.levels.ERROR)
     return false
   end
@@ -192,6 +239,7 @@ function M.stop(opts)
   state.generation = state.generation + 1
   stop_preview_job()
   server.stop()
+  cleanup_shadow()
 
   state.running = false
   state.preview_url = nil
@@ -199,6 +247,7 @@ function M.stop(opts)
   state.project_root = nil
   state.last_line = nil
   state.last_file = nil
+  state.last_anchor = nil
   state.last_sent_at = 0
 
   if not opts.quiet then
@@ -234,17 +283,21 @@ function M.sync_cursor(opts)
   end
 
   local line = vim.api.nvim_win_get_cursor(0)[1]
+  local context = util.cursor_context(0, line)
   local payload = {
     type = "cursor",
     file = file,
     line = line,
-    block_index = util.approximate_block_index(0, line),
+    source_index = context.source_index,
+    block_index = context.block_index,
+    anchor = context.anchor,
   }
 
   if transport.send(payload) then
     state.last_sent_at = now
     state.last_line = line
     state.last_file = file
+    state.last_anchor = context.anchor
     return true
   end
 
@@ -259,6 +312,12 @@ function M.setup_autocmds()
       require("quarto_sync.preview").sync_cursor()
     end,
   })
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = autocmd_group,
+    callback = function()
+      require("quarto_sync.preview").stop({ quiet = true })
+    end,
+  })
 end
 
 function M.status()
@@ -269,9 +328,11 @@ function M.status()
     "server: " .. (server_status.running and "running" or "stopped"),
     "port: " .. tostring(server_status.port or config.get().port),
     "current file: " .. tostring(state.current_file or "none"),
+    "shadow file: " .. tostring(state.shadow_file or "none"),
     "project root: " .. tostring(state.project_root or "none"),
     "preview url: " .. tostring(state.preview_url or "none"),
     "last sync: " .. tostring(state.last_file or "none") .. ":" .. tostring(state.last_line or "none"),
+    "last anchor: " .. tostring(state.last_anchor or "none"),
     "clients: " .. tostring(server_status.clients or 0),
   }
 

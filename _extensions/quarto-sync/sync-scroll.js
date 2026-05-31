@@ -29,6 +29,77 @@
     return Number.isFinite(value) ? value : null;
   }
 
+  function findByAttribute(name, value) {
+    for (const element of document.querySelectorAll(`[${name}]`)) {
+      if (element.getAttribute(name) === value) {
+        return element;
+      }
+    }
+    return null;
+  }
+
+  function syncContainer(element) {
+    if (!element) {
+      return null;
+    }
+
+    return (
+      element.closest(
+        ".quarto-float, .cell, [data-qsync-source-index], [data-qsync-source-line], [data-qsync-block-index]"
+      ) || element
+    );
+  }
+
+  function isSourceMarker(element) {
+    return element && element.classList && element.classList.contains("qsync-source-marker");
+  }
+
+  function isSkippableElement(element) {
+    if (!element) {
+      return true;
+    }
+
+    const tag = element.tagName ? element.tagName.toLowerCase() : "";
+    return isSourceMarker(element) || tag === "script" || tag === "style" || tag === "link" || tag === "meta";
+  }
+
+  function nextMeaningfulElement(marker) {
+    if (!marker) {
+      return null;
+    }
+
+    let element = marker.nextElementSibling;
+    while (element) {
+      if (!isSkippableElement(element)) {
+        return syncContainer(element);
+      }
+      element = element.nextElementSibling;
+    }
+
+    element = marker.parentElement ? marker.parentElement.nextElementSibling : null;
+    while (element) {
+      if (!isSkippableElement(element)) {
+        return syncContainer(element);
+      }
+      element = element.nextElementSibling;
+    }
+
+    return marker;
+  }
+
+  function chooseByAnchor(anchor) {
+    if (typeof anchor !== "string" || anchor.length === 0) {
+      return null;
+    }
+
+    const element =
+      document.getElementById(anchor) ||
+      findByAttribute("data-label", anchor) ||
+      findByAttribute("data-qsync-anchor", anchor);
+
+    return syncContainer(element);
+  }
+
   function chooseByLine(line) {
     if (!Number.isFinite(line)) {
       return null;
@@ -36,14 +107,48 @@
 
     let best = null;
     let bestLine = -Infinity;
-    document.querySelectorAll("[data-qsync-source-line]").forEach((element) => {
+    document.querySelectorAll(".qsync-source-marker[data-qsync-source-line]").forEach((element) => {
       const candidateLine = numberAttr(element, "data-qsync-source-line");
       if (candidateLine !== null && candidateLine <= line && candidateLine >= bestLine) {
         best = element;
         bestLine = candidateLine;
       }
     });
-    return best;
+    if (best) {
+      return nextMeaningfulElement(best);
+    }
+
+    best = null;
+    bestLine = -Infinity;
+    document.querySelectorAll("[data-qsync-source-line]").forEach((element) => {
+      if (isSourceMarker(element)) {
+        return;
+      }
+
+      const candidateLine = numberAttr(element, "data-qsync-source-line");
+      if (candidateLine !== null && candidateLine <= line && candidateLine >= bestLine) {
+        best = element;
+        bestLine = candidateLine;
+      }
+    });
+    return syncContainer(best);
+  }
+
+  function chooseBySourceIndex(sourceIndex) {
+    if (!Number.isFinite(sourceIndex)) {
+      return null;
+    }
+
+    let best = null;
+    let bestIndex = -Infinity;
+    document.querySelectorAll("[data-qsync-source-index]").forEach((element) => {
+      const candidateIndex = numberAttr(element, "data-qsync-source-index");
+      if (candidateIndex !== null && candidateIndex <= sourceIndex && candidateIndex >= bestIndex) {
+        best = element;
+        bestIndex = candidateIndex;
+      }
+    });
+    return syncContainer(best);
   }
 
   function chooseByBlockIndex(blockIndex) {
@@ -60,7 +165,7 @@
         bestIndex = candidateIndex;
       }
     });
-    return best;
+    return syncContainer(best);
   }
 
   function highlight(element) {
@@ -95,8 +200,13 @@
 
   function handlePayload(payload) {
     const line = Number(payload.line);
+    const sourceIndex = Number(payload.source_index);
     const blockIndex = Number(payload.block_index);
-    const target = chooseByLine(line) || chooseByBlockIndex(blockIndex);
+    const target =
+      chooseByAnchor(payload.anchor) ||
+      chooseByLine(line) ||
+      chooseBySourceIndex(sourceIndex) ||
+      chooseByBlockIndex(blockIndex);
     if (target) {
       scrollToElement(target);
     }
