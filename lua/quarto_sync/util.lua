@@ -142,7 +142,7 @@ end
 
 function M.display_math_label(line)
   local text = (line or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  return text:match("^%$%$%s+%{[^}]*#(eq%-[%w%._:%-]+)[^}]*%}$")
+  return text:match("^%$%$%s*%{[^}]*#(eq%-[%w%._:%-]+)[^}]*%}$")
 end
 
 function M.is_display_math_delimiter(line)
