@@ -1,9 +1,14 @@
+local devlog = require("quarto_sync.devlog")
 local source_markers = require("quarto_sync.source_markers")
 local util = require("quarto_sync.util")
 
 local uv = vim.uv or vim.loop
 
 local M = {}
+
+local function log(event, details)
+  devlog.log("overlay: " .. event, details)
+end
 
 local function path_has_prefix(path, prefix)
   if not path or not prefix or prefix == "" then
@@ -94,17 +99,25 @@ function M.create(original_file, project_root, opts)
   opts = opts or {}
   original_file = util.normalize(original_file)
   project_root = util.normalize(project_root)
+  log("create requested", { original_file = original_file, project_root = project_root, opts = opts })
   local relative_path = util.relative_path(original_file, project_root)
   if not relative_path then
+    log("create failed", { reason = "source outside project", original_file = original_file, project_root = project_root })
     util.notify("Could not map source file into Quarto project: " .. tostring(original_file), vim.log.levels.ERROR)
     return nil
   end
 
   local root = util.path_join("/tmp", ("quarto-sync-%s-%s"):format(vim.fn.getpid(), tostring(uv.hrtime())))
+  log("populate requested", {
+    root = root,
+    relative_path = relative_path,
+    protected_paths = vim.tbl_keys(protected_paths(opts)),
+  })
   local ok, err = pcall(function()
     populate(project_root, root, relative_path, protected_paths(opts))
   end)
   if not ok then
+    log("populate failed", { root = root, err = tostring(err) })
     pcall(vim.fn.delete, root, "rf")
     util.notify("Could not create Quarto sync overlay: " .. tostring(err), vim.log.levels.ERROR)
     return nil
@@ -117,11 +130,18 @@ function M.create(original_file, project_root, opts)
     mode = "website",
   })
   if not session then
+    log("create failed", { reason = "shadow creation failed", root = root, relative_path = relative_path })
     pcall(vim.fn.delete, root, "rf")
     return nil
   end
 
   session.relative_path = relative_path
+  log("create complete", {
+    root = root,
+    relative_path = relative_path,
+    shadow_file = session.path,
+    preview_path = session.preview_path,
+  })
   return session
 end
 

@@ -102,6 +102,7 @@ require("quarto_sync").setup({
 ## 命令
 
 - `:QSyncPreview`：为当前 `.qmd` 文件启动同步预览。单文件预览使用隐藏的 shadow `.qmd`；website 项目使用临时 overlay project 以保留网站样式。插件会自动传入内置 sync filter。
+- `:QSyncPreviewDev`：打开 `quarto-sync://preview-dev` scratch 日志 buffer，并以 dev 日志模式启动或重启 preview。日志会记录 preview 启动、Quarto job 输出、同步 server 请求、光标/浏览器同步 payload、shadow 刷新和清理事件。该 buffer 只存在于内存中，不会写入日志文件。
 - `:QSyncStop`：停止 Quarto 预览进程和本地同步服务，并清理 shadow 文件。
 - `:QSyncRestart`：重启预览和同步服务。
 - `:QSyncInstallExtension`：把 `_extensions/quarto-sync/` 复制到当前 Quarto 项目。

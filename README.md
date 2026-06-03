@@ -89,6 +89,7 @@ require("quarto_sync").setup({
 ## Commands
 
 - `:QSyncPreview` starts the sync service and `quarto preview` for the current `.qmd` file. Single documents use a hidden shadow copy; website projects use a temporary overlay project that preserves project styling. It passes the bundled sync filter to Quarto automatically.
+- `:QSyncPreviewDev` opens a `quarto-sync://preview-dev` scratch log buffer and starts or restarts preview in dev logging mode. The buffer records preview startup, Quarto job output, sync server requests, cursor/browser sync payloads, shadow refreshes, and cleanup events. It is in-memory only and does not write a log file.
 - `:QSyncStop` stops the Quarto preview process and internal sync service, then removes the shadow file.
 - `:QSyncRestart` restarts both preview and sync service.
 - `:QSyncInstallExtension` copies `_extensions/quarto-sync/` into the current Quarto project.

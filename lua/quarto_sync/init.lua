@@ -24,6 +24,10 @@ function M.setup(opts)
     require("quarto_sync.preview").preview()
   end, {})
 
+  create_command("QSyncPreviewDev", function()
+    require("quarto_sync.preview").preview_dev()
+  end, {})
+
   create_command("QSyncStop", function()
     require("quarto_sync.preview").stop()
   end, {})
@@ -43,6 +47,10 @@ end
 
 function M.preview()
   return require("quarto_sync.preview").preview()
+end
+
+function M.preview_dev()
+  return require("quarto_sync.preview").preview_dev()
 end
 
 function M.stop()

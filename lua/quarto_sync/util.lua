@@ -2,7 +2,24 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+local level_names = {
+  [vim.log.levels.TRACE] = "TRACE",
+  [vim.log.levels.DEBUG] = "DEBUG",
+  [vim.log.levels.INFO] = "INFO",
+  [vim.log.levels.WARN] = "WARN",
+  [vim.log.levels.ERROR] = "ERROR",
+  [vim.log.levels.OFF] = "OFF",
+}
+
 function M.notify(message, level)
+  local ok, devlog = pcall(require, "quarto_sync.devlog")
+  if ok then
+    devlog.log("notify", {
+      level = level_names[level or vim.log.levels.INFO] or tostring(level),
+      message = message,
+    })
+  end
+
   vim.schedule(function()
     vim.notify(message, level or vim.log.levels.INFO, { title = "quarto-sync.nvim" })
   end)

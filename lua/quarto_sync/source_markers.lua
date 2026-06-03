@@ -1,6 +1,11 @@
+local devlog = require("quarto_sync.devlog")
 local util = require("quarto_sync.util")
 
 local M = {}
+
+local function log(event, details)
+  devlog.log("source_markers: " .. event, details)
+end
 
 local function marker(line_number)
   return ('<div class="qsync-source-marker" data-qsync-source-line="%d"></div>'):format(line_number)
@@ -170,11 +175,14 @@ end
 
 function M.refresh_shadow(session)
   if not session or not session.original_file or not session.path then
+    log("refresh skipped", { reason = "invalid session", session = session })
     return false
   end
 
+  log("refresh requested", { original_file = session.original_file, shadow_file = session.path })
   local ok, lines = pcall(vim.fn.readfile, session.original_file)
   if not ok or not lines then
+    log("refresh failed", { reason = "read failed", original_file = session.original_file })
     util.notify("Could not read source file for sync markers: " .. tostring(session.original_file), vim.log.levels.ERROR)
     return false
   end
@@ -183,10 +191,21 @@ function M.refresh_shadow(session)
   vim.fn.mkdir(util.dirname(session.path), "p")
   local write_ok, write_err = pcall(vim.fn.writefile, instrumented, session.path)
   if not write_ok or write_err ~= 0 then
+    log("refresh failed", {
+      reason = "write failed",
+      shadow_file = session.path,
+      write_err = tostring(write_err),
+    })
     util.notify("Could not write sync shadow file: " .. tostring(session.path), vim.log.levels.ERROR)
     return false
   end
 
+  log("refresh complete", {
+    original_file = session.original_file,
+    shadow_file = session.path,
+    source_lines = #lines,
+    instrumented_lines = #instrumented,
+  })
   return true
 end
 
@@ -202,23 +221,31 @@ function M.create_shadow(original_file, project_root, opts)
     mode = opts.mode,
   }
 
+  log("create shadow", session)
   if not M.refresh_shadow(session) then
+    log("create shadow failed", session)
     return nil
   end
 
+  log("create shadow complete", session)
   return session
 end
 
 function M.cleanup_shadow(session)
   if not session or not session.path then
+    log("cleanup skipped", { reason = "invalid session", session = session })
     return
   end
   if session.overlay_root and util.dir_exists(session.overlay_root) then
+    log("cleanup overlay", { overlay_root = session.overlay_root, shadow_file = session.path })
     pcall(vim.fn.delete, session.overlay_root, "rf")
     return
   end
   if util.file_exists(session.path) then
+    log("cleanup shadow file", { shadow_file = session.path })
     pcall(vim.fn.delete, session.path)
+  else
+    log("cleanup skipped", { reason = "shadow file missing", shadow_file = session.path })
   end
 end
 
