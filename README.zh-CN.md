@@ -5,6 +5,7 @@
 `quarto-sync.nvim` 是一个 Neovim 插件，同时内置一个 Quarto filter extension，用于在 `.qmd` 源文件和 Quarto HTML 预览页面之间做双向滚动同步。
 
 插件会启动 `quarto preview`、启动一个本地同步服务，并监听 Neovim 中的光标移动。浏览器手动滚动时，也可以把当前可见的源码行同步回 Neovim。`:QSyncPreview` 会渲染一个临时的 shadow `.qmd` 文件，在其中插入不可见的源码行标记，然后浏览器端脚本根据这些标记定位。
+对于 `project.type: website` 项目，`:QSyncPreview` 会使用临时 overlay project 预览，从而保留项目级 theme、CSS、navbar 和 sidebar 等网站样式配置。
 
 ## 功能
 
@@ -41,6 +42,7 @@ return {
       port = 18787,
       quarto_cmd = "quarto",
       open_browser = true,
+      preview_mode = "auto",
       debounce_ms = 120,
     },
   },
@@ -59,6 +61,7 @@ return {
       port = 18787,
       quarto_cmd = "quarto",
       open_browser = true,
+      preview_mode = "auto",
       debounce_ms = 120,
     },
   },
@@ -75,6 +78,7 @@ require("quarto_sync").setup({
   quarto_cmd = "quarto",
   browser_cmd = nil,
   open_browser = true,
+  preview_mode = "auto",
   sync_on_cursor_move = true,
   sync_from_browser = true,
   debounce_ms = 120,
@@ -89,6 +93,7 @@ require("quarto_sync").setup({
 | `quarto_cmd` | `"quarto"` | Quarto 可执行文件。 |
 | `browser_cmd` | `nil` | 可选浏览器命令，可以是字符串或列表。 |
 | `open_browser` | `true` | 是否自动打开预览 URL。 |
+| `preview_mode` | `"auto"` | 预览模式：`"auto"` 会对 `project.type: website` 使用 website overlay 预览，其他情况使用 document 预览；也可以强制设为 `"document"` 或 `"website"`。 |
 | `sync_on_cursor_move` | `true` | 是否在光标移动时发送同步事件。 |
 | `sync_from_browser` | `true` | 浏览器手动滚动时，是否移动 Neovim 光标到对应源码行。 |
 | `debounce_ms` | `120` | 两次光标同步之间的最小间隔。 |
@@ -96,7 +101,7 @@ require("quarto_sync").setup({
 
 ## 命令
 
-- `:QSyncPreview`：为当前 `.qmd` 文件启动同步预览。实际传给 Quarto 的是隐藏的 shadow `.qmd` 文件，插件会自动传入内置 sync filter。
+- `:QSyncPreview`：为当前 `.qmd` 文件启动同步预览。单文件预览使用隐藏的 shadow `.qmd`；website 项目使用临时 overlay project 以保留网站样式。插件会自动传入内置 sync filter。
 - `:QSyncStop`：停止 Quarto 预览进程和本地同步服务，并清理 shadow 文件。
 - `:QSyncRestart`：重启预览和同步服务。
 - `:QSyncInstallExtension`：把 `_extensions/quarto-sync/` 复制到当前 Quarto 项目。
@@ -145,7 +150,7 @@ quarto-sync:
 
 ## Quarto Extension
 
-`:QSyncPreview` 会直接使用仓库内置 filter，不依赖项目安装。
+`:QSyncPreview` 会直接使用仓库内置 filter，不依赖项目安装。document 预览会在源文件旁创建隐藏的 `.qsync-*.qmd`；website 预览会在 `/tmp/quarto-sync-*` 下创建临时 overlay project，以便 Quarto 在保留网站配置的同时渲染源码行标记。
 
 如果你确实需要普通 Quarto 命令也带同步资源，可以在 `.qmd` buffer 中运行：
 
@@ -170,12 +175,13 @@ filters:
 
 - 浏览器到 Neovim 的反向同步要求原始 `.qmd` 已在 Neovim 可见窗口中打开；插件不会自动打开文件。
 - 反向同步依赖 `:QSyncPreview` 生成的临时源码行标记。普通 Quarto render 即使安装了 extension，也不一定有足够的源码行标记用于反向定位。
-- 主要支持单文件 `.qmd` 预览。
-- Quarto book、website、多页面站点、revealjs、PDF 输出和远程 SSH 浏览器转发还没有覆盖。
+- 主要支持单文件 `.qmd` 和 `project.type: website` HTML 预览。
+- Quarto book、revealjs、PDF 输出和远程 SSH 浏览器转发还没有覆盖。
 - Markdown 表格会作为一个同步区域处理，不做单元格级同步。
 - code output、figure、table、callout 和 shortcode 可能定位到最近的源码行标记或 label anchor，而不是精确到行内位置。
 - 建议给图、diagram 和可执行代码块添加 label，例如 `#| label: fig-example` 或 `%%| label: fig-example`，这样定位最稳。
 - 插件不会自动修改 `_quarto.yml` 或 `.qmd` YAML。
+- Website 预览会在 `/tmp` 下创建临时 overlay，并跳过 `_site`、`.quarto` 等生成目录，避免预览渲染写回源项目。
 - `:QSyncPreview` 依赖 Quarto preview 对 `--lua-filter` 的转发行为；如果未来 Quarto 改变该行为，集成方式可能需要调整。
 
 ## 排障
@@ -187,12 +193,13 @@ filters:
 - 如果 Neovim 或 Quarto 异常退出，源文件旁边可能残留隐藏的 `.qsync-*.qmd` 文件。停止预览后可以安全删除。
 - 如果 `18787` 端口被占用，在 Neovim setup 中改成其他端口，`:QSyncPreview` 会自动把该端口写进浏览器 URL。
 - 如果没有自动打开浏览器，可以设置 `browser_cmd`，例如 `"firefox"`，或 macOS 上的 `{ "open", "-a", "Safari" }`。
+- 如果 website overlay 模式在复杂项目中表现异常，可以设置 `preview_mode = "document"` 回退到旧的单文件预览路径。
 
 ## Roadmap
 
 - 更好地清理异常退出后残留的 shadow 文件。
 - WebSocket transport，用于更丰富的双向交互。
-- 更好地支持 Quarto book 和 website。
+- 更好地支持 Quarto book。
 - 多标签页状态管理。
 - 远程开发工作流。
 

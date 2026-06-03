@@ -57,6 +57,24 @@ function M.path_starts_with(path, root)
   return path == root:sub(1, -2) or path:sub(1, #root) == root
 end
 
+function M.relative_path(path, root)
+  path = M.normalize(path)
+  root = M.normalize(root)
+  if not path or not root then
+    return nil
+  end
+
+  if root:sub(-1) ~= "/" then
+    root = root .. "/"
+  end
+  if path:sub(1, #root) ~= root then
+    return nil
+  end
+
+  local relative = path:sub(#root + 1)
+  return relative ~= "" and relative or nil
+end
+
 function M.find_project_root(file)
   local start = M.dirname(M.normalize(file))
   if not start or start == "" then
@@ -103,6 +121,20 @@ end
 
 local function is_blank(line)
   return line:match("^%s*$") ~= nil
+end
+
+function M.display_math_label(line)
+  local text = (line or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  return text:match("^%$%$%s+%{[^}]*#(eq%-[%w%._:%-]+)[^}]*%}$")
+end
+
+function M.is_display_math_delimiter(line)
+  local text = (line or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "$$" then
+    return true
+  end
+
+  return M.display_math_label(text) ~= nil
 end
 
 local function strip_yaml_front_matter(lines)
@@ -182,7 +214,9 @@ local function fenced_block_anchor(lines, target_line)
 
   local finish = block.finish or #lines
   for index = block.start + 1, math.min(finish - 1, block.start + 25) do
-    anchor = extract_label(lines[index])
+    if not M.is_display_math_delimiter(lines[index]) then
+      anchor = extract_label(lines[index])
+    end
     if anchor then
       return anchor
     end
@@ -197,6 +231,47 @@ local function fence_info(line)
     return nil
   end
   return fence:sub(1, 1), #fence
+end
+
+local function display_math_anchor(lines, target_line, start_line)
+  local active_fence = nil
+  local math_start = nil
+  local math_anchor = nil
+
+  for index = start_line or 1, #lines do
+    local line = lines[index] or ""
+    local trimmed = line:gsub("^%s+", "")
+    local fence_char, fence_len = fence_info(line)
+
+    if active_fence then
+      if fence_char == active_fence.char and fence_len >= active_fence.len then
+        active_fence = nil
+      end
+    elseif fence_char then
+      active_fence = {
+        char = fence_char,
+        len = fence_len,
+      }
+    elseif math_start then
+      if M.is_display_math_delimiter(trimmed) then
+        local anchor = M.display_math_label(trimmed) or math_anchor
+        if target_line >= math_start and target_line <= index then
+          return anchor
+        end
+        math_start = nil
+        math_anchor = nil
+      end
+    elseif M.is_display_math_delimiter(trimmed) then
+      math_start = index
+      math_anchor = M.display_math_label(trimmed)
+    end
+
+    if index > target_line and not math_start then
+      return nil
+    end
+  end
+
+  return nil
 end
 
 local function starts_table(lines, index)
@@ -230,12 +305,15 @@ function M.cursor_context(bufnr, target_line)
   local in_table = false
   local list_active = false
   local quote_active = false
+  local force_next_block = false
+  local equation_anchor = display_math_anchor(lines, target_line, start_line)
 
   for index = start_line, math.min(#lines, target_line) do
     local line = lines[index] or ""
     local trimmed = line:gsub("^%s+", "")
     local fence_char, fence_len = fence_info(line)
     local closing_div = trimmed:match("^:::+%s*$") ~= nil
+    local force_block = false
 
     if active_fence then
       if fence_char == active_fence.char and fence_len >= active_fence.len then
@@ -243,11 +321,18 @@ function M.cursor_context(bufnr, target_line)
       end
       previous_blank = false
     elseif in_math then
-      if trimmed:match("^%$%$%s*$") then
+      if M.is_display_math_delimiter(trimmed) then
         in_math = false
+        force_next_block = true
       end
       previous_blank = false
+    elseif is_blank(line) then
+      previous_blank = true
+      list_active = false
+      quote_active = false
+      in_table = false
     elseif fence_char then
+      force_next_block = false
       count = count + 1
       active_fence = {
         char = fence_char,
@@ -257,8 +342,10 @@ function M.cursor_context(bufnr, target_line)
       list_active = false
       quote_active = false
       in_table = false
-    elseif trimmed:match("^%$%$%s*$") then
-      if previous_blank then
+    elseif M.is_display_math_delimiter(trimmed) then
+      force_block = force_next_block
+      force_next_block = false
+      if previous_blank or force_block then
         count = count + 1
       end
       in_math = true
@@ -266,19 +353,17 @@ function M.cursor_context(bufnr, target_line)
       list_active = false
       quote_active = false
       in_table = false
-    elseif is_blank(line) then
-      previous_blank = true
-      list_active = false
-      quote_active = false
-      in_table = false
     elseif trimmed:match("^#+%s+") then
+      force_next_block = false
       count = count + 1
       previous_blank = false
       list_active = false
       quote_active = false
       in_table = false
     elseif starts_table(lines, index) then
-      if not in_table then
+      force_block = force_next_block
+      force_next_block = false
+      if not in_table or force_block then
         count = count + 1
       end
       previous_blank = false
@@ -286,7 +371,9 @@ function M.cursor_context(bufnr, target_line)
       quote_active = false
       in_table = true
     elseif trimmed:match("^[-*+]%s+") or trimmed:match("^%d+[.)]%s+") then
-      if previous_blank or not list_active then
+      force_block = force_next_block
+      force_next_block = false
+      if previous_blank or not list_active or force_block then
         count = count + 1
       end
       previous_blank = false
@@ -294,7 +381,9 @@ function M.cursor_context(bufnr, target_line)
       quote_active = false
       in_table = false
     elseif trimmed:match("^>") then
-      if previous_blank or not quote_active then
+      force_block = force_next_block
+      force_next_block = false
+      if previous_blank or not quote_active or force_block then
         count = count + 1
       end
       previous_blank = false
@@ -302,17 +391,20 @@ function M.cursor_context(bufnr, target_line)
       quote_active = true
       in_table = false
     elseif trimmed:match("^:::+") and not closing_div then
+      force_next_block = false
       previous_blank = true
       list_active = false
       quote_active = false
       in_table = false
-    elseif previous_blank then
+    elseif previous_blank or force_next_block then
       count = count + 1
+      force_next_block = false
       previous_blank = false
       list_active = false
       quote_active = false
       in_table = false
     else
+      force_next_block = false
       previous_blank = false
     end
   end
@@ -321,7 +413,7 @@ function M.cursor_context(bufnr, target_line)
   return {
     source_index = index,
     block_index = index,
-    anchor = fenced_block_anchor(lines, target_line),
+    anchor = equation_anchor or fenced_block_anchor(lines, target_line),
   }
 end
 

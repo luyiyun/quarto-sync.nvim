@@ -6,6 +6,7 @@ M.defaults = {
   quarto_cmd = "quarto",
   browser_cmd = nil,
   open_browser = true,
+  preview_mode = "auto",
   sync_on_cursor_move = true,
   sync_from_browser = true,
   debounce_ms = 120,

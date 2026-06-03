@@ -1,5 +1,6 @@
 local config = require("quarto_sync.config")
 local extension = require("quarto_sync.extension")
+local overlay = require("quarto_sync.overlay")
 local server = require("quarto_sync.server")
 local source_markers = require("quarto_sync.source_markers")
 local transport = require("quarto_sync.transport")
@@ -18,6 +19,9 @@ local state = {
   shadow_file = nil,
   shadow_session = nil,
   project_root = nil,
+  preview_mode = nil,
+  overlay_root = nil,
+  preview_target_path = nil,
   last_line = nil,
   last_file = nil,
   last_anchor = nil,
@@ -48,6 +52,22 @@ local function append_query_param(url, key, value)
 
   local separator = base:find("?", 1, true) and "&" or "?"
   return base .. separator .. key .. "=" .. tostring(value) .. fragment
+end
+
+local function append_url_path(url, path)
+  if not path or path == "" then
+    return url
+  end
+
+  local base, suffix = url:match("^([^?#]*)(.*)$")
+  if not base then
+    return url
+  end
+  if base:match("%.html$") then
+    return url
+  end
+
+  return base:gsub("/+$", "") .. "/" .. path:gsub("^/+", "") .. (suffix or "")
 end
 
 local function open_browser(url)
@@ -91,6 +111,7 @@ local function handle_preview_output(lines)
   for _, line in ipairs(lines) do
     local url = extract_url(line)
     if url and not state.preview_url then
+      url = append_url_path(url, state.preview_target_path)
       url = append_query_param(url, "qsyncPort", config.get().port)
       state.preview_url = url
       util.notify("Quarto preview started: " .. url, vim.log.levels.INFO)
@@ -125,6 +146,8 @@ local function cleanup_shadow()
   end
   state.shadow_session = nil
   state.shadow_file = nil
+  state.overlay_root = nil
+  state.preview_target_path = nil
 end
 
 local function setup_shadow_refresh()
@@ -201,6 +224,70 @@ local function center_source_window(win, line)
   return true
 end
 
+local function inspect_project(opts, project_root)
+  if not project_root or project_root == "" then
+    return nil
+  end
+
+  local output = vim.fn.system({ opts.quarto_cmd, "inspect", project_root })
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+
+  local ok, decoded = pcall(util.json_decode, output)
+  if not ok then
+    return nil
+  end
+  return decoded
+end
+
+local function project_type(info)
+  return info
+    and info.config
+    and info.config.project
+    and info.config.project.type
+end
+
+local function project_output_dir(info)
+  return info
+    and info.config
+    and info.config.project
+    and info.config.project["output-dir"]
+end
+
+local function resolve_preview_mode(opts, project_info)
+  local mode = opts.preview_mode or "auto"
+  if mode == "document" or mode == "website" then
+    return mode
+  end
+  if mode ~= "auto" then
+    util.notify("Unknown quarto-sync preview_mode `" .. tostring(mode) .. "`, falling back to auto.", vim.log.levels.WARN)
+  end
+  return project_type(project_info) == "website" and "website" or "document"
+end
+
+local function create_preview_session(file, project_root, preview_mode, project_info)
+  if preview_mode == "website" then
+    return overlay.create(file, project_root, {
+      output_dir = project_output_dir(project_info),
+    })
+  end
+
+  return source_markers.create_shadow(file, project_root, {
+    mode = "document",
+  })
+end
+
+local function preview_command(opts, preview_mode, shadow_session, filter_path)
+  if preview_mode == "website" then
+    return { opts.quarto_cmd, "preview", shadow_session.overlay_root, "--no-browser", "--lua-filter", filter_path },
+      shadow_session.overlay_root
+  end
+
+  return { opts.quarto_cmd, "preview", shadow_session.path, "--no-browser", "--lua-filter", filter_path },
+    shadow_session.project_root
+end
+
 function M.preview()
   local opts = config.get()
   local file = util.current_file()
@@ -217,11 +304,17 @@ function M.preview()
     return false
   end
 
+  local project_info = nil
+  if (opts.preview_mode or "auto") ~= "document" then
+    project_info = inspect_project(opts, project_root)
+  end
+  local preview_mode = resolve_preview_mode(opts, project_info)
+
   M.stop({ quiet = true })
   state.generation = state.generation + 1
   local generation = state.generation
 
-  local shadow_session = source_markers.create_shadow(file, project_root)
+  local shadow_session = create_preview_session(file, project_root, preview_mode, project_info)
   if not shadow_session then
     return false
   end
@@ -241,6 +334,9 @@ function M.preview()
   state.shadow_session = shadow_session
   state.shadow_file = shadow_session.path
   state.project_root = project_root
+  state.preview_mode = preview_mode
+  state.overlay_root = shadow_session.overlay_root
+  state.preview_target_path = shadow_session.preview_path
   state.last_line = nil
   state.last_file = nil
   state.last_anchor = nil
@@ -250,9 +346,9 @@ function M.preview()
 
   setup_shadow_refresh()
 
-  local cmd = { opts.quarto_cmd, "preview", shadow_session.path, "--no-browser", "--lua-filter", filter_path }
+  local cmd, cwd = preview_command(opts, preview_mode, shadow_session, filter_path)
   local job = vim.fn.jobstart(cmd, {
-    cwd = project_root,
+    cwd = cwd,
     stdout_buffered = false,
     stderr_buffered = false,
     on_stdout = function(_, data)
@@ -306,6 +402,9 @@ function M.stop(opts)
   state.preview_url = nil
   state.current_file = nil
   state.project_root = nil
+  state.preview_mode = nil
+  state.overlay_root = nil
+  state.preview_target_path = nil
   state.last_line = nil
   state.last_file = nil
   state.last_anchor = nil
@@ -418,6 +517,8 @@ function M.status()
     "current file: " .. tostring(state.current_file or "none"),
     "shadow file: " .. tostring(state.shadow_file or "none"),
     "project root: " .. tostring(state.project_root or "none"),
+    "preview mode: " .. tostring(state.preview_mode or "none"),
+    "overlay root: " .. tostring(state.overlay_root or "none"),
     "preview url: " .. tostring(state.preview_url or "none"),
     "last sync: " .. tostring(state.last_file or "none") .. ":" .. tostring(state.last_line or "none"),
     "last anchor: " .. tostring(state.last_anchor or "none"),

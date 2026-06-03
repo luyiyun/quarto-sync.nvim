@@ -58,10 +58,12 @@ function M.instrument_lines(lines)
   local in_table = false
   local list_active = false
   local quote_active = false
+  local force_next_marker = false
 
   for index, line in ipairs(lines) do
     local text = trimmed(line)
     local char, len = fence_info(line)
+    local force_marker = false
 
     if index == 1 and line == "---" then
       in_yaml = true
@@ -78,8 +80,9 @@ function M.instrument_lines(lines)
       end
     elseif in_math then
       table.insert(output, line)
-      if text:match("^%$%$%s*$") then
+      if util.is_display_math_delimiter(text) then
         in_math = false
+        force_next_marker = true
       end
     elseif in_table and not is_blank(line) then
       table.insert(output, line)
@@ -90,6 +93,7 @@ function M.instrument_lines(lines)
         list_active = false
         quote_active = false
       elseif char then
+        force_next_marker = false
         table.insert(output, marker(index))
         table.insert(output, line)
         in_fence = true
@@ -98,7 +102,8 @@ function M.instrument_lines(lines)
         list_active = false
         quote_active = false
         in_table = false
-      elseif text:match("^%$%$%s*$") then
+      elseif util.is_display_math_delimiter(text) then
+        force_next_marker = false
         table.insert(output, marker(index))
         table.insert(output, line)
         in_math = true
@@ -106,19 +111,23 @@ function M.instrument_lines(lines)
         quote_active = false
         in_table = false
       elseif starts_table(lines, index) then
+        force_next_marker = false
         table.insert(output, marker(index))
         table.insert(output, line)
         in_table = true
         list_active = false
         quote_active = false
       elseif text:match("^#+%s+") or is_div_open(line) then
+        force_next_marker = false
         table.insert(output, marker(index))
         table.insert(output, line)
         list_active = false
         quote_active = false
         in_table = false
       elseif is_list_item(line) then
-        if not list_active then
+        force_marker = force_next_marker
+        force_next_marker = false
+        if not list_active or force_marker then
           table.insert(output, marker(index))
         end
         table.insert(output, line)
@@ -126,20 +135,24 @@ function M.instrument_lines(lines)
         quote_active = false
         in_table = false
       elseif text:match("^>") then
-        if not quote_active then
+        force_marker = force_next_marker
+        force_next_marker = false
+        if not quote_active or force_marker then
           table.insert(output, marker(index))
         end
         table.insert(output, line)
         list_active = false
         quote_active = true
         in_table = false
-      elseif should_mark_paragraph(lines, index) then
+      elseif should_mark_paragraph(lines, index) or force_next_marker then
+        force_next_marker = false
         table.insert(output, marker(index))
         table.insert(output, line)
         list_active = false
         quote_active = false
         in_table = false
       else
+        force_next_marker = false
         table.insert(output, line)
         in_table = false
       end
@@ -167,6 +180,7 @@ function M.refresh_shadow(session)
   end
 
   local instrumented = M.instrument_lines(lines)
+  vim.fn.mkdir(util.dirname(session.path), "p")
   local write_ok, write_err = pcall(vim.fn.writefile, instrumented, session.path)
   if not write_ok or write_err ~= 0 then
     util.notify("Could not write sync shadow file: " .. tostring(session.path), vim.log.levels.ERROR)
@@ -176,12 +190,16 @@ function M.refresh_shadow(session)
   return true
 end
 
-function M.create_shadow(original_file, project_root)
+function M.create_shadow(original_file, project_root, opts)
+  opts = opts or {}
   original_file = util.normalize(original_file)
   local session = {
     original_file = original_file,
     project_root = project_root,
-    path = M.shadow_path(original_file),
+    path = opts.path or M.shadow_path(original_file),
+    overlay_root = opts.overlay_root,
+    preview_path = opts.preview_path,
+    mode = opts.mode,
   }
 
   if not M.refresh_shadow(session) then
@@ -193,6 +211,10 @@ end
 
 function M.cleanup_shadow(session)
   if not session or not session.path then
+    return
+  end
+  if session.overlay_root and util.dir_exists(session.overlay_root) then
+    pcall(vim.fn.delete, session.overlay_root, "rf")
     return
   end
   if util.file_exists(session.path) then
