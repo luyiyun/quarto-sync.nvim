@@ -4,7 +4,7 @@
 
 `quarto-sync.nvim` is a minimal Neovim plugin plus Quarto extension for bidirectional synchronized scrolling between a `.qmd` buffer and the rendered Quarto HTML preview.
 
-The plugin starts `quarto preview`, starts an internal local sync service, watches cursor movement in Neovim, and sends the current source position to the browser. Browser scrolling can also send the visible source line back to Neovim. `:QSyncPreview` renders a temporary shadow copy of the `.qmd` file with invisible source-line markers, while the Quarto extension injects a tiny browser script and fallback block markers into the rendered HTML.
+The plugin starts `quarto preview`, starts an internal local sync service, watches cursor movement in Neovim, and sends the current source position to the browser. Deliberate browser scrolling can also send the visible source line back to Neovim. `:QSyncPreview` renders a temporary shadow copy of the `.qmd` file with invisible source-line markers, while the Quarto extension injects a tiny browser script and fallback block markers into the rendered HTML.
 For `project.type: website` projects, `:QSyncPreview` uses a temporary overlay project so project-level website theme, CSS, navbar, and sidebar settings are preserved.
 
 ## Features
@@ -138,8 +138,8 @@ quarto-sync:
 1. Open a `.qmd` file in Neovim.
 2. Run `:QSyncPreview`.
 3. Move the cursor in Neovim and the browser preview will scroll to the matching rendered source-line region.
-4. Scroll the browser preview manually and Neovim will move the cursor to the matching source-line region if the source file is visible in a window.
-5. Save the `.qmd` file when you change content; the shadow copy is regenerated on `BufWritePost`.
+4. Scroll the browser preview manually and Neovim will move the cursor to the matching source-line region if the source file is visible in a window. Reloads, scroll restoration, and other automatic browser scrolling are ignored.
+5. Save the `.qmd` file when you change content; the shadow copy and preview are refreshed on `BufWritePost` without moving the Neovim cursor.
 
 In Chrome DevTools, the rendered page should contain `sync-scroll.js`, `.qsync-source-marker`, and `data-qsync-source-line` when sync preview is active. Labeled figures and diagrams should also have an HTML anchor such as `id="fig-example"` or `data-label="fig-example"`.
 

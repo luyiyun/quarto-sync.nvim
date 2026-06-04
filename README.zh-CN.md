@@ -4,7 +4,7 @@
 
 `quarto-sync.nvim` 是一个 Neovim 插件，同时内置一个 Quarto filter extension，用于在 `.qmd` 源文件和 Quarto HTML 预览页面之间做双向滚动同步。
 
-插件会启动 `quarto preview`、启动一个本地同步服务，并监听 Neovim 中的光标移动。浏览器手动滚动时，也可以把当前可见的源码行同步回 Neovim。`:QSyncPreview` 会渲染一个临时的 shadow `.qmd` 文件，在其中插入不可见的源码行标记，然后浏览器端脚本根据这些标记定位。
+插件会启动 `quarto preview`、启动一个本地同步服务，并监听 Neovim 中的光标移动。浏览器真实手动滚动时，也可以把当前可见的源码行同步回 Neovim。`:QSyncPreview` 会渲染一个临时的 shadow `.qmd` 文件，在其中插入不可见的源码行标记，然后浏览器端脚本根据这些标记定位。
 对于 `project.type: website` 项目，`:QSyncPreview` 会使用临时 overlay project 预览，从而保留项目级 theme、CSS、navbar 和 sidebar 等网站样式配置。
 
 ## 功能
@@ -116,8 +116,8 @@ require("quarto_sync").setup({
 1. 在 Neovim 中打开一个 `.qmd` 文件。
 2. 运行 `:QSyncPreview`。
 3. 在 Neovim 中移动光标，浏览器会滚动到对应的渲染位置。
-4. 手动滚动浏览器预览，如果原始 `.qmd` 已在可见窗口中打开，Neovim 会把光标移动到对应源码行。
-5. 修改内容后保存文件，shadow 文件会在 `BufWritePost` 自动重新生成。
+4. 手动滚动浏览器预览，如果原始 `.qmd` 已在可见窗口中打开，Neovim 会把光标移动到对应源码行。页面重载、滚动位置恢复和其他自动滚动不会触发反向同步。
+5. 修改内容后保存文件，shadow 文件和预览会在 `BufWritePost` 自动刷新，但不会移动 Neovim 光标。
 
 在 Chrome DevTools 中，启用同步后页面里应该能搜到 `sync-scroll.js`、`.qsync-source-marker` 和 `data-qsync-source-line`。带 label 的图或代码块还应该有类似 `id="fig-example"` 或 `data-label="fig-example"` 的锚点。
 

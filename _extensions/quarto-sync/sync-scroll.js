@@ -9,13 +9,28 @@
   const DEFAULT_PORT = 18787;
   const HIGHLIGHT_MS = 900;
   const MANUAL_SCROLL_GRACE_MS = 450;
+  const MANUAL_SCROLL_INTENT_MS = 1000;
   const PROGRAMMATIC_SCROLL_QUIET_MS = 250;
   const BROWSER_SCROLL_DEBOUNCE_MS = 120;
+  const SCROLL_KEYS = new Set([
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "End",
+    "Home",
+    "PageDown",
+    "PageUp",
+    " ",
+    "Spacebar",
+  ]);
 
   const state = {
     current: null,
     highlightTimer: null,
     lastManualScrollAt: 0,
+    lastManualScrollIntentAt: 0,
+    pointerDown: false,
     programmaticScrollActive: false,
     programmaticScrollQuietTimer: null,
     scrollTimer: null,
@@ -69,6 +84,25 @@
     state.programmaticScrollActive = true;
     clearBrowserScrollTimer();
     refreshProgrammaticScrollQuietTimer();
+  }
+
+  function markManualScrollIntent() {
+    state.lastManualScrollIntentAt = Date.now();
+  }
+
+  function hasRecentManualScrollIntent(now) {
+    return state.pointerDown || now - state.lastManualScrollIntentAt <= MANUAL_SCROLL_INTENT_MS;
+  }
+
+  function isEditableTarget(target) {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    return (
+      target.isContentEditable ||
+      target.closest("input, textarea, select, [contenteditable='true']") !== null
+    );
   }
 
   function findByAttribute(name, value) {
@@ -280,7 +314,7 @@
     fetch(`${serverBaseUrl()}/scroll`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "scroll", line }),
+      body: JSON.stringify({ type: "scroll", line, manual: true }),
       keepalive: true,
     }).catch(() => {
       // The Neovim sync server may not be running for ordinary rendered HTML.
@@ -325,6 +359,44 @@
     source.onmessage = onEvent;
   }
 
+  window.addEventListener("wheel", markManualScrollIntent, { passive: true });
+  window.addEventListener("touchmove", markManualScrollIntent, { passive: true });
+  window.addEventListener(
+    "pointerdown",
+    () => {
+      state.pointerDown = true;
+    },
+    { passive: true }
+  );
+  window.addEventListener(
+    "pointermove",
+    () => {
+      if (state.pointerDown) {
+        markManualScrollIntent();
+      }
+    },
+    { passive: true }
+  );
+  window.addEventListener(
+    "pointerup",
+    () => {
+      state.pointerDown = false;
+    },
+    { passive: true }
+  );
+  window.addEventListener(
+    "pointercancel",
+    () => {
+      state.pointerDown = false;
+    },
+    { passive: true }
+  );
+  window.addEventListener("keydown", (event) => {
+    if (SCROLL_KEYS.has(event.key) && !isEditableTarget(event.target)) {
+      markManualScrollIntent();
+    }
+  });
+
   window.addEventListener(
     "scroll",
     () => {
@@ -333,7 +405,13 @@
         return;
       }
 
-      state.lastManualScrollAt = Date.now();
+      const now = Date.now();
+      if (!hasRecentManualScrollIntent(now)) {
+        clearBrowserScrollTimer();
+        return;
+      }
+
+      state.lastManualScrollAt = now;
       scheduleBrowserScrollSync();
     },
     { passive: true }

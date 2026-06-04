@@ -10,6 +10,7 @@ local util = require("quarto_sync.util")
 local uv = vim.uv or vim.loop
 
 local M = {}
+local SAVE_REFRESH_BROWSER_QUIET_MS = 1000
 
 local state = {
   running = false,
@@ -29,6 +30,7 @@ local state = {
   last_sent_at = 0,
   last_browser_line = nil,
   suppress_cursor_until = 0,
+  suppress_browser_until = 0,
   generation = 0,
 }
 
@@ -214,7 +216,11 @@ local function setup_shadow_refresh()
     callback = function(args)
       local file = util.normalize(args.file)
       if state.shadow_session and state.current_file and file == state.current_file then
-        log("shadow refresh requested", { file = file })
+        state.suppress_browser_until = uv.now() + SAVE_REFRESH_BROWSER_QUIET_MS
+        log("shadow refresh requested", {
+          file = file,
+          suppress_browser_until = state.suppress_browser_until,
+        })
         source_markers.refresh_shadow(state.shadow_session)
       end
     end,
@@ -425,6 +431,7 @@ function M.preview(preview_opts)
   state.last_sent_at = 0
   state.last_browser_line = nil
   state.suppress_cursor_until = 0
+  state.suppress_browser_until = 0
 
   setup_shadow_refresh()
 
@@ -525,6 +532,7 @@ function M.stop(opts)
   state.last_sent_at = 0
   state.last_browser_line = nil
   state.suppress_cursor_until = 0
+  state.suppress_browser_until = 0
 
   if not opts.quiet then
     util.notify("Stopped quarto-sync preview.", vim.log.levels.INFO)
@@ -623,6 +631,16 @@ function M.sync_from_browser(payload)
   end
   if payload.type and payload.type ~= "scroll" then
     log("browser sync skipped", { reason = "ignored payload type", payload = payload })
+    return false
+  end
+
+  local now = uv.now()
+  if now < state.suppress_browser_until and payload.manual ~= true then
+    log("browser sync skipped", {
+      reason = "suppressed during save refresh",
+      remaining_ms = state.suppress_browser_until - now,
+      payload = payload,
+    })
     return false
   end
 
